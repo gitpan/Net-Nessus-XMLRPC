@@ -13,11 +13,11 @@ Net::Nessus::XMLRPC - Communicate with Nessus scanner(v4.2+) via XMLRPC
 
 =head1 VERSION
 
-Version 0.02
+Version 0.03
 
 =cut
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 
 =head1 SYNOPSIS
@@ -411,7 +411,7 @@ sub policy_list_uids {
 	return '';
 }
 
-=head2 scan_list_names 
+=head2 policy_list_names 
 
 returns array of names of policies available
 =cut
@@ -589,6 +589,10 @@ L<http://search.cpan.org/dist/Net-Nessus-XMLRPC>
 
 =back
 
+
+=head1 REPOSITORY
+
+Repository is available on GitHub: http://github.com/kost/nessus-xmlrpc-perl
 
 =head1 ACKNOWLEDGEMENTS
 
