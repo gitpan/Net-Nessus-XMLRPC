@@ -1,0 +1,14 @@
+--- #YAML:1.0
+name:                Net-Nessus-XMLRPC
+version:             0.01
+abstract:            Communicate with Nessus scanner(v4.2+) via XMLRPC
+license:             ~
+author:              
+    - Vlatko Kosturjak <kost@linux.hr>
+generated_by:        ExtUtils::MakeMaker version 6.42
+distribution_type:   module
+requires:     
+    Test::More:                    0
+meta-spec:
+    url:     http://module-build.sourceforge.net/META-spec-v1.3.html
+    version: 1.3
