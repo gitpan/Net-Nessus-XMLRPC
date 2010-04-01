@@ -13,11 +13,11 @@ Net::Nessus::XMLRPC - Communicate with Nessus scanner(v4.2+) via XMLRPC
 
 =head1 VERSION
 
-Version 0.04
+Version 0.10
 
 =cut
 
-our $VERSION = '0.04';
+our $VERSION = '0.10';
 
 
 =head1 SYNOPSIS
@@ -50,6 +50,16 @@ scan, download report, etc.
 	open (FILE,">$reportfile") or die "Cannot open file $reportfile: $!";
 	print FILE $reportcont;
 	close (FILE);
+
+=head1 NOTICE
+
+This CPAN module uses LWP for communicating with Nessus over XMLRPC via https.
+Therefore, make sure that you have Net::SSL (provided by Crypt::SSLeay):
+http://search.cpan.org/perldoc?Crypt::SSLeay
+or IO::Socket::SSL:
+http://search.cpan.org/perldoc?IO::Socket::SSL
+
+If you think you have login problems, check this first!
 
 =head1 METHODS
 
@@ -112,6 +122,8 @@ sub nessus_http_request {
 	my $furl = $self->nurl.$uri;
 	my $r = POST $furl, $post_data;
 	my $result = $ua->request($r);
+	# my $filename="n-".time; open (FILE,">$filename"); 
+	# print FILE $result->as_string; close (FILE);
 	if ($result->is_success) {
 		return $result->content;
 	} else {
@@ -131,7 +143,7 @@ sub nessus_request {
 	}
 	my $xmls;
 	eval {
-	$xmls=XMLin($cont, ForceArray => 1, KeyAttr => '');
+	$xmls=XMLin($cont, ForceArray => 1, KeyAttr => '', SuppressEmpty => '' );
 	} or return '';
 	if ($xmls->{'status'}->[0] eq "OK") {
 		return $xmls; 
@@ -158,6 +170,26 @@ sub login {
 	return $self->token;
 }
 
+=head2 logout 
+
+logout from Nessus server
+=cut
+sub logout {
+	my ($self) = @_;
+	my $post=[ "token" => $self->token ];
+	my $xmls = $self->nessus_request("logout",$post);
+	$self->token('');
+}
+
+=head2 DESTROY 
+
+destructor, calls logout method on destruction
+=cut
+sub DESTROY {
+	my ($self) = @_;
+	$self->logout();
+}
+
 =head2 logged_in
 
 returns true if we're logged in
@@ -181,6 +213,28 @@ sub scan_new {
 		"target" => $target
 		 ];
 
+	my $xmls = $self->nessus_request("scan/new",$post);
+	if ($xmls) {
+		return ($xmls->{'contents'}->[0]->{'scan'}->[0]->{'uuid'}->[0]);
+	} else {
+		return $xmls
+	}
+}	
+
+=head2 scan_new_file ( $policy_id, $scan_name, $targets, $filename )
+
+initiates new scan with hosts from file named $filename
+=cut
+sub scan_new_file {
+	my ( $self, $policy_id, $scan_name, $target, $filename ) = @_;
+
+	my $post={ 
+		"token" => $self->token, 
+		"policy_id" => $policy_id,
+		"scan_name" => $scan_name,
+		"target" => $target
+		 };
+	$post->{"target_file_name"} = $self->file_upload($filename);
 	my $xmls = $self->nessus_request("scan/new",$post);
 	if ($xmls) {
 		return ($xmls->{'contents'}->[0]->{'scan'}->[0]->{'uuid'}->[0]);
@@ -361,6 +415,53 @@ sub scan_finished {
 	}
 }	
 
+=head2 nessus_http_upload_request ( $uri, $post_data )
+
+low-level function, makes HTTP upload request to URI specified
+=cut
+sub nessus_http_upload_request {
+	my ( $self, $uri, $post_data ) = @_;
+	my $ua = $self->{_ua};
+	# my $ua = LWP::UserAgent->new;
+	my $furl = $self->nurl.$uri;
+	my $r = POST $furl, Content_Type => 'form-data', Content => $post_data;
+	my $result = $ua->request($r);
+	# my $filename="u-".time; open (FILE,">$filename"); 
+	# print FILE $result->as_string; close (FILE);
+	if ($result->is_success) {
+		return $result->content;
+	} else {
+		return '';
+	}
+}
+
+=head2 file_upload ( $filename )
+
+uploads $filename to nessus server, returns filename of file uploaded
+or '' if failed
+
+Note that uploaded file is per session (i.e. it will be there until logout/attack.) 
+So, don't logout or login again and use the filename! You need to upload it 
+again!
+=cut
+sub file_upload {
+	my ( $self, $filename ) = @_;
+	my $post=[ "token" => $self->token, Filedata => [ $filename] ];
+	my $cont=$self->nessus_http_upload_request("file/upload",$post);
+	if ($cont eq '') {
+		return ''	
+	}
+	my $xmls;
+	eval {
+	$xmls=XMLin($cont, ForceArray => 1, KeyAttr => '', SuppressEmpty => '');
+	} or return '';
+	if ($xmls->{'status'}->[0] eq "OK") {
+		return $xmls->{'contents'}->[0]->{'fileUploaded'}->[0]; 
+	} else { 
+		return ''
+	}
+}
+
 =head2 policy_get_first
 
 returns policy id for the first policy found
@@ -379,6 +480,36 @@ sub policy_get_first {
 	} # foreach
 	} # if
 	return '';
+}
+
+=head2 policy_get_firsth
+
+returns hash %value with basic info of first policy/scan 
+returned by the server
+
+$value{'id'}, $value{'name'}, $value{'owner'}, $value{'visibility'},
+$value{'comment'}
+=cut
+sub policy_get_firsth {
+	my ( $self ) = @_;
+
+	my $post=[ 
+		"token" => $self->token, 
+		 ];
+
+	my %info;	
+	my $xmls = $self->nessus_request("policy/list",$post);
+	if ($xmls->{'contents'}->[0]->{'policies'}->[0]->{'policy'}) {
+	foreach my $report (@{$xmls->{'contents'}->[0]->{'policies'}->[0]->{'policy'}}) {
+		$info{'id'} = $report->{'policyID'}->[0];
+		$info{'name'} = $report->{'policyName'}->[0];
+		$info{'owner'} = $report->{'policyOwner'}->[0];
+		$info{'visibility'} = $report->{'visibility'}->[0];
+		$info{'comment'} = $report->{'policyContents'}->[0]->{'policyComments'}->[0];
+		return %info;
+	} # foreach
+	} # if
+	return %info;
 }
 
 =head2 policy_list_uids 
@@ -425,9 +556,39 @@ sub policy_list_names {
 	return '';
 }
 
+=head2 policy_get_info ( $policy_id ) 
+
+returns hash %value with basic info of policy/scan identified by $policy_id 
+
+$value{'id'}, $value{'name'}, $value{'owner'}, $value{'visibility'},
+$value{'comment'}
+=cut
+sub policy_get_info {
+	my ( $self, $policy_id ) = @_;
+
+	my $post=[ 
+		"token" => $self->token, 
+		 ];
+	my %info;
+	my $xmls = $self->nessus_request("policy/list",$post);
+	if ($xmls->{'contents'}->[0]->{'policies'}->[0]->{'policy'}) {
+	foreach my $report (@{$xmls->{'contents'}->[0]->{'policies'}->[0]->{'policy'}}) {
+	if ($report->{'policyID'}->[0] eq $policy_id) {
+		$info{'id'} = $report->{'policyID'}->[0];
+		$info{'name'} = $report->{'policyName'}->[0];
+		$info{'owner'} = $report->{'policyOwner'}->[0];
+		$info{'visibility'} = $report->{'visibility'}->[0];
+		$info{'comment'} = $report->{'policyContents'}->[0]->{'policyComments'}->[0];
+		return %info;
+	}
+	} # foreach
+	} # if
+	return %info;
+}
+
 =head2 policy_get_id ( $policy_name ) 
 
-returns ID of the policy identified by $policy_name 
+returns ID of the scan/policy identified by $policy_name 
 =cut
 sub policy_get_id {
 	my ( $self, $policy_name ) = @_;
@@ -448,7 +609,7 @@ sub policy_get_id {
 
 =head2 policy_get_name ( $policy_id ) 
 
-returns name of the scan identified by $policy_id 
+returns name of the scan/policy identified by $policy_id 
 =cut
 sub policy_get_name {
 	my ( $self, $policy_id ) = @_;
@@ -465,6 +626,173 @@ sub policy_get_name {
 	 } # foreach
 	 } # if
 	 return '';
+}
+
+=head2 policy_delete ( $policy_id )
+
+delete policy identified by $policy_id
+=cut
+sub policy_delete {
+	my ( $self, $policy_id ) = @_;
+
+	my $post=[ 
+		"token" => $self->token, 
+		"policy_id" => $policy_id,
+		 ];
+
+	my $xmls = $self->nessus_request("policy/delete",$post);
+	return $xmls;
+}
+
+=head2 policy_copy ( $policy_id )
+
+copy policy identified by $policy_id, returns $policy_id of new copied policy
+=cut
+sub policy_copy {
+	my ( $self, $policy_id ) = @_;
+
+	my $post=[ 
+		"token" => $self->token, 
+		"policy_id" => $policy_id,
+		 ];
+
+	my $xmls = $self->nessus_request("policy/copy",$post);
+	if ($xmls->{'contents'}->[0]->{'policy'}->[0]) {
+		return $xmls->{'contents'}->[0]->{'policy'}->[0]->{'policyID'}->[0];
+	} # if
+	return '';
+}
+
+=head2 policy_rename ( $policy_id, $policy_name )
+
+rename policy to $policy_name identified by $policy_id
+=cut
+sub policy_rename {
+	my ( $self, $policy_id, $policy_name ) = @_;
+
+	my $post=[ 
+		"token" => $self->token, 
+		"policy_id" => $policy_id,
+		"policy_name" => $policy_name
+		 ];
+
+	my $xmls = $self->nessus_request("policy/rename",$post);
+	return $xmls;
+}
+
+=head2 policy_edit ( $policy_id, $params )
+
+edit policy identified by $policy_id
+
+%params (must be present): 
+policy_name => name
+policy_shared => 1
+
+%params can be (examples)
+max_hosts => 50,
+max_checks=> 10,
+use_mac_addr => no,
+throttle_scan => yes,
+optimize_test => yes,
+log_whole_attack => no,
+ssl_cipher_list => strong,
+save_knowledge_base => no,
+port_range => 1-65535
+=cut
+sub policy_edit {
+	my ( $self, $policy_id, $params ) = @_;
+
+	my $post={ 
+		"token" => $self->token, 
+		"policy_id" => $policy_id
+		 };
+	while (my ($key, $value) = each(%{$params}))
+	{
+		$post->{$key} = $value;
+	}
+
+	my $xmls = $self->nessus_request("policy/add",$post);
+	return $xmls;
+}
+
+=head2 policy_new ( $params )
+
+create new policy with $params, 
+%params must be present:
+policy_name
+policy_shared
+
+the others parameters are same as policy_edit
+=cut
+sub policy_new {
+	my ( $self, $params ) = @_;
+
+	my $xmls = $self->policy_edit(0, %{$params});
+	return $xmls;
+}
+
+=head2 policy_get_opts ( $policy_id ) 
+
+returns hash with different options for policy identified by $policy_id 
+=cut
+sub policy_get_opts {
+	my ( $self, $policy_id ) = @_;
+
+	my $post=[ 
+		"token" => $self->token, 
+		 ];
+	my $xmls = $self->nessus_request("policy/list",$post);
+
+	if ($xmls->{'contents'}->[0]->{'policies'}->[0]->{'policy'}) {
+		my %opts;
+		foreach my $report (@{$xmls->{'contents'}->[0]->{'policies'}->[0]->{'policy'}}) {
+		if ($report->{'policyID'}->[0] eq $policy_id) {
+			$opts{'policy_name'}=$report->{'policyName'}->[0];
+			if ($report->{'visibility'}->[0] eq "shared") {
+				$opts{'policy_shared'}=1;
+			} else {
+				$opts{'policy_shared'}=0;
+			}
+			if ($report->{'policyContents'}->[0]->{'policyComments'}->[0]) {
+				$opts{'policy_comments'}=$report->{'policyContents'}->[0]->{'policyComments'}->[0];
+			}
+			foreach my $prefs (@{$report->{'policyContents'}->[0]->{'Preferences'}->[0]->{'ServerPreferences'}->[0]->{'preference'}}) {
+				$opts{$prefs->{'name'}->[0]} = $prefs->{'value'}->[0] if ($prefs->{'name'}->[0]);
+			}
+			foreach my $prefp (@{$report->{'policyContents'}->[0]->{'Preferences'}->[0]->{'PluginsPreferences'}->[0]->{'item'}}) {
+				$opts{$prefp->{'fullName'}->[0]} = $prefp->{'selectedValue'}->[0] if ($prefp->{'fullName'}->[0]);
+			}
+			foreach my $plugf (@{$report->{'policyContents'}->[0]->{'FamilySelection'}->[0]->{'FamilyItem'}}) {
+				$opts{"plugin_selection.family.".$plugf->{'FamilyName'}->[0]} = $plugf->{'Status'}->[0] if ($plugf->{'FamilyName'}->[0]);
+			}
+			foreach my $plugi (@{$report->{'policyContents'}->[0]->{'IndividualPluginSelection'}->[0]->{'PluginItem'}}) {
+				$opts{"plugin_selection.individual_plugin.".$plugi->{'PluginId'}->[0]} = $plugi->{'Status'}->[0] if ($plugi->{'PluginId'}->[0]);
+			}
+			return %opts;
+		}
+	 } # foreach
+	 } # if
+	 return '';
+}
+
+=head2 policy_set_opts ( $policy_id , $params ) 
+
+sets policy options via hashref $params identified by $policy_id 
+=cut
+sub policy_set_opts {
+	my ( $self, $policy_id, $params ) = @_;
+
+	my $post={ "token" => $self->token };
+	%{$post} = $self->policy_get_opts ($policy_id);
+	while (my ($key, $value) = each(%{$params}))
+	{
+		$post->{$key} = $value;
+	}
+	$post->{"token"} = $self->token;
+	$post->{"policy_id"} = $policy_id;
+
+	my $xmls = $self->nessus_request("policy/edit",$post);
+	return $xmls;
 }
 
 =head2 report_list_uids 
@@ -538,6 +866,30 @@ sub report_delete {
 	my $xmls = $self->nessus_request("report/delete", $post);
 	return $xmls;
 }	
+
+=head2 report_import ( $filename )
+
+tells nessus server to import already uploaded file named $filename
+( i.e. you already uploaded the file via file_upload() )
+=cut
+sub report_import {
+	my ( $self, $filename ) = @_;
+	my $post={ "token" => $self->token, "file" => $filename };
+	my $xmls = $self->nessus_request("file/report/import",$post);
+	return $xmls;
+}
+
+=head2 report_import_file ( $filename )
+
+uploads $filename to nessus server and imports it as nessus report
+=cut
+sub report_import_file {
+	my ( $self, $filename ) = @_;
+	my $post={ "token" => $self->token};
+	$post->{"file"} = $self->file_upload($filename);
+	my $xmls = $self->nessus_request("file/report/import",$post);
+	return $xmls;
+}
 
 =head1 AUTHOR
 
