@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               Net-Nessus-XMLRPC
-version:            0.10
+version:            0.20
 abstract:           Communicate with Nessus scanner(v4.2+) via XMLRPC
 author:
     - Vlatko Kosturjak <kost@linux.hr>
